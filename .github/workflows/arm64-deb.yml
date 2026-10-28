@@ -26,7 +26,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            build-essential ca-certificates curl file pkg-config patchelf \
+            build-essential ca-certificates curl file jq pkg-config patchelf \
             libssl-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
             librsvg2-dev libxdo-dev
 
