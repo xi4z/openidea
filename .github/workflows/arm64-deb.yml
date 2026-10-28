@@ -2,11 +2,6 @@ name: Build arm64 deb
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version label for the artifact (informational only)"
-        required: false
-        default: ""
   push:
     branches: [arm64-deb]
 
@@ -17,43 +12,73 @@ jobs:
   deb-arm64:
     name: Debian package (arm64)
     runs-on: ubuntu-24.04-arm
+    # Build on Debian 12 so the binary links against glibc 2.36, not the
+    # runner image's 2.39: a bookworm-built .deb runs on Debian 12/13 and
+    # Ubuntu 24.04+.
+    container: node:22-bookworm
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with: { version: 11 }
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: pnpm }
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with: { key: aarch64-unknown-linux-gnu }
+
       - name: System dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
-            libxdo-dev libssl-dev patchelf build-essential file
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates curl file pkg-config patchelf \
+            libssl-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev
+
+      - name: Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: pnpm
+        run: npm install -g pnpm@11
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: debian12-aarch64
+
       - name: Build frontend
         run: pnpm install --frozen-lockfile && pnpm build
+
       # Upstream creates signed updater artifacts, which needs a signing key.
-      # A .deb for local redistribution does not, so turn that off here.
+      # A locally redistributed .deb does not, so turn that off here.
       - name: Updater artifacts off
         run: echo '{"bundle":{"createUpdaterArtifacts":false}}' > /tmp/tauri.arm64.json
+
       - name: Build arm64 deb
         run: pnpm tauri build --target aarch64-unknown-linux-gnu --bundles deb --config /tmp/tauri.arm64.json
+
       - name: Inspect artifact
         run: |
           set -euo pipefail
+          deb=$(ls target/aarch64-unknown-linux-gnu/release/bundle/deb/*.deb)
           file target/aarch64-unknown-linux-gnu/release/openidea
-          ls -l target/aarch64-unknown-linux-gnu/release/bundle/deb/
-          for d in target/aarch64-unknown-linux-gnu/release/bundle/deb/*.deb; do
-            echo "== $d"
-            dpkg-deb -I "$d" | sed -n '1,25p'
-            echo "-- contained binaries --"
-            dpkg-deb -c "$d" | grep -E 'bin/|\.so' | head -20
-          done
-      - uses: actions/upload-artifact@v4
-        with:
-          name: openidea-deb-arm64
-          path: target/aarch64-unknown-linux-gnu/release/bundle/deb/*.deb
-          if-no-files-found: error
-          retention-days: 14
+          dpkg-deb -I "$deb" | sed -n '1,20p'
+          echo "-- contained files --"
+          dpkg-deb -c "$deb" | grep -E 'bin/|\.so' | head -20
+          echo "-- max glibc symbol version --"
+          grep -ao 'GLIBC_2\.[0-9]*' target/aarch64-unknown-linux-gnu/release/openidea \
+            | sort -uV | tail -3
+          echo "-- max GLIBCXX --"
+          grep -ao 'GLIBCXX_3\.4\.[0-9]*' target/aarch64-unknown-linux-gnu/release/openidea \
+            | sort -uV | tail -3 || true
+
+      - name: Publish to a release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          deb=$(ls target/aarch64-unknown-linux-gnu/release/bundle/deb/*.deb)
+          name=$(basename "$deb")
+          tag="v$(jq -r .version src-tauri/tauri.conf.json)-arm64"
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --title "OpenIDEA ${tag#v} (Debian arm64)" \
+              --notes "arm64 build of OpenIDEA for Debian 12+/Ubuntu 24.04+, built on a native aarch64 runner against glibc 2.36.
+          Install: sudo apt install ./$name"
+          gh release upload "$tag" "$deb" --clobber
+          sha256sum "$deb" > "$deb.sha256"
+          gh release upload "$tag" "$deb.sha256" --clobber
+          echo "https://github.com/${{ github.repository }}/releases/download/$tag/$name"
