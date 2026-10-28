@@ -34,8 +34,12 @@ jobs:
             libxdo-dev libssl-dev patchelf build-essential file
       - name: Build frontend
         run: pnpm install --frozen-lockfile && pnpm build
+      # Upstream creates signed updater artifacts, which needs a signing key.
+      # A .deb for local redistribution does not, so turn that off here.
+      - name: Updater artifacts off
+        run: echo '{"bundle":{"createUpdaterArtifacts":false}}' > /tmp/tauri.arm64.json
       - name: Build arm64 deb
-        run: pnpm tauri build --target aarch64-unknown-linux-gnu --bundles deb
+        run: pnpm tauri build --target aarch64-unknown-linux-gnu --bundles deb --config /tmp/tauri.arm64.json
       - name: Inspect artifact
         run: |
           set -euo pipefail
