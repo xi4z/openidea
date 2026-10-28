@@ -76,12 +76,31 @@ jobs:
           set -euo pipefail
           deb=$(ls target/aarch64-unknown-linux-gnu/release/bundle/deb/*.deb)
           name=$(basename "$deb")
-          tag="v$(jq -r .version src-tauri/tauri.conf.json)-arm64"
-          gh release view "$tag" >/dev/null 2>&1 || \
-            gh release create "$tag" --title "OpenIDEA ${tag#v} (Debian arm64)" \
-              --notes "arm64 build of OpenIDEA for Debian 12+/Ubuntu 24.04+, built on a native aarch64 runner against glibc 2.36.
-          Install: sudo apt install ./$name"
-          gh release upload "$tag" "$deb" --clobber
-          sha256sum "$deb" > "$deb.sha256"
-          gh release upload "$tag" "$deb.sha256" --clobber
+          version=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' src-tauri/tauri.conf.json | head -1)
+          tag="v${version}-arm64"
+          api="https://api.github.com/repos/${{ github.repository }}"
+          auth=(-H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json")
+
+          id=$(curl -fsSL "${auth[@]}" "$api/releases/tags/$tag" 2>/dev/null | sed -n 's/.*"id": *\([0-9][0-9]*\).*/\1/p' | head -1 || true)
+          if [ -z "${id:-}" ]; then
+            body=$(printf '{"tag_name":"%s","name":"OpenIDEA %s (Debian arm64)","body":"arm64 build for Debian 12+ / Ubuntu 24.04+, compiled on a native aarch64 runner (glibc 2.34 baseline).\\n\\nInstall: sudo apt install ./%s"}' "$tag" "$version" "$name")
+            id=$(curl -fsSL -X POST "${auth[@]}" -d "$body" "$api/releases" | sed -n 's/.*"id": *\([0-9][0-9]*\).*/\1/p' | head -1)
+          fi
+          echo "release id: $id"
+
+          # Replace an asset left by an earlier run.
+          old=$(curl -fsSL "${auth[@]}" "$api/releases/$id/assets" | grep -o "\"id\":[0-9]*,\"node_id\":\"[^\"]*\",\"name\":\"$name\"" | sed -n 's/"id":\([0-9]*\).*/\1/p' || true)
+          if [ -n "${old:-}" ]; then
+            for a in $old; do curl -fsSL -X DELETE "${auth[@]}" "$api/releases/assets/$a"; done
+          fi
+
+          curl -fsSL -X POST "${auth[@]}" \
+            -H "Content-Type: application/vnd.debian.binary-package" \
+            --data-binary @"$deb" \
+            "$api/releases/$id/assets?name=$name" > /dev/null
+          sha256sum "$deb" | awk '{print $1}' > "$deb.sha256"
+          curl -fsSL -X POST "${auth[@]}" \
+            -H "Content-Type: text/plain" \
+            --data-binary @"$deb.sha256" \
+            "$api/releases/$id/assets?name=$name.sha256" > /dev/null
           echo "https://github.com/${{ github.repository }}/releases/download/$tag/$name"
