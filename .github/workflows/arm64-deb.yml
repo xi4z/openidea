@@ -1,0 +1,55 @@
+name: Build arm64 deb
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version label for the artifact (informational only)"
+        required: false
+        default: ""
+  push:
+    branches: [arm64-deb]
+
+permissions:
+  contents: write
+
+jobs:
+  deb-arm64:
+    name: Debian package (arm64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { key: aarch64-unknown-linux-gnu }
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libxdo-dev libssl-dev patchelf build-essential file
+      - name: Build frontend
+        run: pnpm install --frozen-lockfile && pnpm build
+      - name: Build arm64 deb
+        run: pnpm tauri build --target aarch64-unknown-linux-gnu --bundles deb
+      - name: Inspect artifact
+        run: |
+          set -euo pipefail
+          file target/aarch64-unknown-linux-gnu/release/openidea
+          ls -l target/aarch64-unknown-linux-gnu/release/bundle/deb/
+          for d in target/aarch64-unknown-linux-gnu/release/bundle/deb/*.deb; do
+            echo "== $d"
+            dpkg-deb -I "$d" | sed -n '1,25p'
+            echo "-- contained binaries --"
+            dpkg-deb -c "$d" | grep -E 'bin/|\.so' | head -20
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openidea-deb-arm64
+          path: target/aarch64-unknown-linux-gnu/release/bundle/deb/*.deb
+          if-no-files-found: error
+          retention-days: 14
